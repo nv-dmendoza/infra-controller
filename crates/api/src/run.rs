@@ -95,6 +95,11 @@ pub async fn run(
             debug,
             crate::state_controller::machine::extra_logfmt_logging_fields(),
             None::<NoSubscriber>,
+<<<<<<< HEAD:crates/api/src/run.rs
+=======
+            log_history_max_bytes,
+            &carbide_config.tracing,
+>>>>>>> 985edaac8 (Allow enabling/disabling tracing in nico-api config TOML (#2263)):crates/api-core/src/run.rs
         )
         .wrap_err("setup_telemetry")?
     };

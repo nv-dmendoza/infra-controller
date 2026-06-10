@@ -653,6 +653,62 @@ pub struct CarbideConfig {
     /// hidden when the list is empty.
     #[serde(default)]
     pub web_ui_sidebar_tools: Vec<ToolLink>,
+<<<<<<< HEAD:crates/api/src/cfg/file.rs
+=======
+
+    /// In-memory log history for the admin web live log viewer
+    /// (`/admin/logs`): how much recent log data to keep for
+    /// replay-on-connect and scrollback, and how many lines to send
+    /// per page to the browser.
+    #[serde(default)]
+    pub log_history: LogHistoryConfig,
+
+    #[serde(default)]
+    pub tracing: TracingConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TracingConfig {
+    /// Whether to enable OTLP tracing. Default: false
+    #[serde(default)]
+    pub enabled: bool,
+    /// Whether to allow enabling/disabling tracing at runtime. Default: true
+    #[serde(default = "default_to_true")]
+    pub allow_runtime_changes: bool,
+    /// Endpoint to send traces to. Can be overridden by the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT env var.
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_runtime_changes: true,
+            otlp_endpoint: None,
+        }
+    }
+}
+
+impl CarbideConfig {
+    pub fn machine_state_handler_site_config(&self) -> MachineStateHandlerSiteConfig {
+        MachineStateHandlerSiteConfig {
+            firmware_global: self.firmware_global.clone(),
+            machine_state_controller: self.machine_state_controller.clone(),
+            host_health: self.host_health,
+
+            selected_profile: self.selected_profile,
+            bios_profiles: self.bios_profiles.clone(),
+            oem_manager_profiles: self.oem_manager_profiles.clone(),
+
+            dpa_enabled: self.is_dpa_enabled(),
+            dpf_enabled: self.dpf.enabled,
+            spdm_enabled: self.spdm.enabled,
+
+            dpu_enable_secure_boot: self.dpu_config.dpu_enable_secure_boot,
+        }
+    }
+>>>>>>> 985edaac8 (Allow enabling/disabling tracing in nico-api config TOML (#2263)):crates/api-core/src/cfg/file.rs
 }
 
 /// One external tool link rendered in the admin web UI's "Tools"
@@ -3806,6 +3862,59 @@ mod tests {
         let deserialized = serde_json::from_str::<SiteExplorerConfig>("{}")?;
         assert_eq!(deserialized, SiteExplorerConfig::default());
         Ok(())
+    }
+
+    #[test]
+    fn tracing_config_defaults_when_omitted() {
+        let config: CarbideConfig = Figment::new()
+            .merge(Toml::file(format!("{TEST_DATA_DIR}/min_config.toml")))
+            .extract()
+            .unwrap();
+
+        assert!(!config.tracing.enabled);
+        assert!(config.tracing.allow_runtime_changes);
+        assert_eq!(config.tracing.otlp_endpoint, None);
+    }
+
+    #[test]
+    fn tracing_config_deserializes_from_toml() {
+        let toml = r#"
+[tracing]
+enabled = true
+allow_runtime_changes = false
+otlp_endpoint = "http://otel-collector.observability.svc.cluster.local:4317"
+"#;
+
+        let config: CarbideConfig = Figment::new()
+            .merge(Toml::file(format!("{TEST_DATA_DIR}/min_config.toml")))
+            .merge(Toml::string(toml))
+            .extract()
+            .unwrap();
+
+        assert!(config.tracing.enabled);
+        assert!(!config.tracing.allow_runtime_changes);
+        assert_eq!(
+            config.tracing.otlp_endpoint.as_deref(),
+            Some("http://otel-collector.observability.svc.cluster.local:4317")
+        );
+    }
+
+    #[test]
+    fn tracing_config_defaults_runtime_changes_when_section_is_partial() {
+        let toml = r#"
+[tracing]
+enabled = true
+"#;
+
+        let config: CarbideConfig = Figment::new()
+            .merge(Toml::file(format!("{TEST_DATA_DIR}/min_config.toml")))
+            .merge(Toml::string(toml))
+            .extract()
+            .unwrap();
+
+        assert!(config.tracing.enabled);
+        assert!(config.tracing.allow_runtime_changes);
+        assert_eq!(config.tracing.otlp_endpoint, None);
     }
 
     #[test]
