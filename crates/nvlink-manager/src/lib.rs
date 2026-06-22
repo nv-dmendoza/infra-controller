@@ -57,6 +57,166 @@ use tracing::Instrument;
 /// Default NMX-M instance identifier for credentials and client lookup when none is specified.
 pub const DEFAULT_NMX_M_NAME: &str = "default";
 
+<<<<<<< HEAD
+=======
+/// Multicast groups limit for new NMX-C partitions. Must be a multiple of 4. Assuming at most 2
+/// partitions per tray and 18 tray default partitions, this is floor(1024 / (36+18)) rounded down
+/// to the nearest multiple of 4.
+const NMX_C_PARTITION_MULTICAST_GROUPS_LIMIT: u32 = 16;
+
+fn rack_id_from_chassis_snapshots(
+    chassis_snapshots: &[&ManagedHostStateSnapshot],
+) -> Option<RackId> {
+    chassis_snapshots
+        .iter()
+        .find_map(|snapshot| snapshot.host_snapshot.rack_id.clone())
+}
+
+fn domain_uuid_from_nmx_c_hello(
+    hello: &libnmxc::nmxc_model::ServerHello,
+) -> NvLinkManagerResult<NvLinkDomainId> {
+    hello
+        .server_header
+        .as_ref()
+        .and_then(|header| uuid::Uuid::parse_str(&header.domain_uuid).ok())
+        .map(NvLinkDomainId::from)
+        .ok_or_else(|| {
+            NvLinkManagerError::internal(format!(
+                "Failed to parse domain UUID from NMX-C hello response: {hello:?}"
+            ))
+        })
+}
+
+fn parse_nvlink_gpu_fabric_guid(fabric_guid: &str) -> u64 {
+    let s = fabric_guid.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).unwrap_or(0)
+    } else {
+        s.parse::<u64>().unwrap_or(0)
+    }
+}
+
+fn nvlink_gpus_from_hardware_info(hardware_info: &HardwareInfo) -> Vec<NvLinkGpu> {
+    hardware_info
+        .gpus
+        .iter()
+        .filter_map(|gpu| gpu.platform_info.as_ref())
+        .map(|platform_info| NvLinkGpu {
+            tray_index: platform_info.tray_index as i32,
+            slot_id: platform_info.slot_number as i32,
+            device_id: platform_info.module_id as i32,
+            guid: parse_nvlink_gpu_fabric_guid(&platform_info.fabric_guid),
+        })
+        .collect()
+}
+
+fn build_machine_nvlink_info_from_nmx_c_hello(
+    existing: Option<&MachineNvLinkInfo>,
+    snapshot: Option<&ManagedHostStateSnapshot>,
+    chassis_serial: &str,
+    domain_uuid: NvLinkDomainId,
+) -> MachineNvLinkInfo {
+    if let Some(existing) = existing {
+        let mut info = existing.clone();
+        if info.domain_uuid == NvLinkDomainId::nil() {
+            info.domain_uuid = domain_uuid;
+        }
+        if info.chassis_serial.trim().is_empty() {
+            info.chassis_serial = chassis_serial.to_string();
+        }
+        return info;
+    }
+
+    if let Some(snapshot_info) =
+        snapshot.and_then(|snapshot| snapshot.host_snapshot.nvlink_info.as_ref())
+    {
+        return MachineNvLinkInfo {
+            domain_uuid,
+            chassis_serial: if snapshot_info.chassis_serial.trim().is_empty() {
+                chassis_serial.to_string()
+            } else {
+                snapshot_info.chassis_serial.clone()
+            },
+            gpus: snapshot_info.gpus.clone(),
+        };
+    }
+
+    let gpus = snapshot
+        .and_then(|snapshot| snapshot.host_snapshot.hardware_info.as_ref())
+        .map(nvlink_gpus_from_hardware_info)
+        .unwrap_or_default();
+
+    MachineNvLinkInfo {
+        domain_uuid,
+        chassis_serial: chassis_serial.to_string(),
+        gpus,
+    }
+}
+
+/// Populates missing `machines.nvlink_info` entries (or nil `domain_uuid`) using NMX-C hello.
+fn populate_machine_nvlink_info_if_needed(
+    machine_nvlink_info: &mut HashMap<MachineId, Option<MachineNvLinkInfo>>,
+    managed_host_snapshots: &HashMap<MachineId, ManagedHostStateSnapshot>,
+    chassis_serial: &str,
+    machine_ids: &[MachineId],
+    domain_uuid: NvLinkDomainId,
+) -> Vec<(MachineId, MachineNvLinkInfo)> {
+    let mut updates = Vec::new();
+    for machine_id in machine_ids {
+        let existing = machine_nvlink_info
+            .get(machine_id)
+            .and_then(|info| info.as_ref());
+        if existing.is_some_and(|info| info.domain_uuid != NvLinkDomainId::nil()) {
+            continue;
+        }
+
+        let snapshot = managed_host_snapshots.get(machine_id);
+        let updated = build_machine_nvlink_info_from_nmx_c_hello(
+            existing,
+            snapshot,
+            chassis_serial,
+            domain_uuid,
+        );
+        machine_nvlink_info.insert(*machine_id, Some(updated.clone()));
+        updates.push((*machine_id, updated));
+    }
+    updates
+}
+
+fn nmx_c_partition_create_attr_with_multicast_groups_limit(
+    multicast_groups_limit: u32,
+) -> libnmxc::nmxc_model::PartitionAttr {
+    libnmxc::nmxc_model::PartitionAttr {
+        resiliency_mode: libnmxc::nmxc_model::ResiliencyMode::NmxResiliencyModeUndefined as i32,
+        multicast_groups_limit,
+    }
+}
+
+fn nmx_c_create_partition_request(
+    name: String,
+    gpu_uids: &[u64],
+    multicast_groups_limit: u32,
+) -> libnmxc::nmxc_model::CreatePartitionRequest {
+    libnmxc::nmxc_model::CreatePartitionRequest {
+        context: None,
+        name,
+        gpu_resource_id: gpu_uids
+            .iter()
+            .map(|&uid| libnmxc::nmxc_model::GpuResourceId {
+                resource_id: Some(libnmxc::nmxc_model::gpu_resource_id::ResourceId::GpuUid(
+                    uid,
+                )),
+            })
+            .collect(),
+        attr: Some(nmx_c_partition_create_attr_with_multicast_groups_limit(
+            multicast_groups_limit,
+        )),
+        partition_id: None,
+        gateway_id: NMX_C_GATEWAY_ID.into(),
+    }
+}
+
+>>>>>>> 37f3c2d98 (fix(nvlink): Multicast group limit attribute, when creating a partiti… (#2681))
 #[derive(Debug, Clone)]
 struct NmxcPartitionOperation {
     domain_uuid: Option<NvLinkDomainId>,
